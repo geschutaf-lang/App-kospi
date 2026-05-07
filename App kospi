@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 import streamlit as st
 import requests
 import pandas as pd
@@ -7,17 +8,15 @@ from datetime import datetime, timedelta
 import warnings
 warnings.filterwarnings('ignore')
 
-st.set_page_config(
-    page_title="코스피 모멘텀 전략",
-    page_icon="📈",
-    layout="wide"
-)
+st.set_page_config(page_title="KOSPI Momentum", page_icon="📈", layout="wide")
 
 st.title("📈 코스피 모멘텀 전략 자동 탐색")
 st.write("버튼을 누르면 실시간으로 데이터를 수집하여 이번 달 매수 종목을 계산합니다.")
-st.caption("전략: 코스피 시총 상위 20개 중 평균 모멘텀 1위 단일 매수 | TIP ETF 필터 적용 | 매월 말일 리밸런싱")
+st.caption("전략: 코스피 시총 상위 20개 | 평균 모멘텀 1위 단일 매수 | TIP ETF 필터 | 매월 말일 리밸런싱")
 
-# ── 모멘텀 계산 함수 ──────────────────────────────────────────
+# =========================================================
+# 모멘텀 계산 함수
+# =========================================================
 def avg_momentum(series):
     s = series.dropna()
     if len(s) < 13:
@@ -30,92 +29,14 @@ def avg_momentum(series):
     avg = (r1 + r3 + r6 + r12) / 4
     return avg, r1, r3, r6, r12
 
-# ── 코스피 시총 상위 종목 수집 ────────────────────────────────
+
+# =========================================================
+# 코스피 시총 상위 N개 수집 (네이버 금융 크롤링)
+# 실패시 하드코딩 폴백 사용
+# =========================================================
 @st.cache_data(ttl=86400)
 def get_kospi_top_n(n=20):
-    """
-    네이버 금융에서 코스피 시총 상위 종목을 수집합니다.
-    야후파이낸스 형식(.KS)으로 변환하여 반환합니다.
-    """
-    try:
-        # 네이버 금융 시총 순위 페이지 크롤링
-        headers = {
-            'User-Agent': (
-                'Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
-                'AppleWebKit/537.36 (KHTML, like Gecko) '
-                'Chrome/120.0.0.0 Safari/537.36'
-            )
-        }
-
-        tickers_info = []
-        page = 1
-
-        while len(tickers_info) < n * 2:  # 여유분 확보
-            url = (
-                f'https://finance.naver.com/sise/sise_market_sum.naver'
-                f'?sosok=0&page={page}'  # sosok=0: 코스피
-            )
-            resp = requests.get(url, headers=headers, timeout=15)
-            resp.encoding = 'euc-kr'
-            df_list = pd.read_html(resp.text, encoding='euc-kr')
-
-            # 시총 테이블 찾기
-            table = None
-            for df_t in df_list:
-                if '종목명' in df_t.columns and '시가총액' in df_t.columns:
-                    table = df_t
-                    break
-
-            if table is None:
-                break
-
-            table = table.dropna(subset=['종목명', '시가총액'])
-            table = table[table['종목명'] != '종목명']  # 헤더 행 제거
-
-            for _, row in table.iterrows():
-                name = str(row['종목명']).strip()
-                if not name or name == 'nan':
-                    continue
-                tickers_info.append({'name': name})
-
-            if len(table) < 10:
-                break
-            page += 1
-            if page > 5:
-                break
-
-        # 종목코드 가져오기 (별도 API)
-        code_url = 'https://finance.naver.com/sise/sise_market_sum.naver?sosok=0'
-        resp2 = requests.get(code_url, headers=headers, timeout=15)
-        resp2.encoding = 'euc-kr'
-
-        from bs4 import BeautifulSoup
-        soup = BeautifulSoup(resp2.text, 'html.parser')
-
-        codes_names = []
-        for a_tag in soup.select('td.ctg a[href*="code="]'):
-            href = a_tag.get('href', '')
-            name = a_tag.text.strip()
-            if 'code=' in href:
-                code = href.split('code=')[-1][:6]
-                codes_names.append({'code': code, 'name': name})
-
-        if codes_names:
-            # 야후파이낸스 형식 변환: 005930 → 005930.KS
-            result = []
-            market_cap_map = {}
-            for item in codes_names[:n*2]:
-                yf_ticker = item['code'] + '.KS'
-                result.append(yf_ticker)
-                market_cap_map[yf_ticker] = item['name']
-
-            return result[:n], market_cap_map
-
-    except Exception as e:
-        st.warning(f"네이버 금융 크롤링 실패: {e}. 기본 목록을 사용합니다.")
-
-    # ── 폴백: 코스피 시총 상위 20개 하드코딩 (2025년 기준) ───
-    fallback = {
+    FALLBACK = {
         '005930.KS': '삼성전자',
         '000660.KS': 'SK하이닉스',
         '005380.KS': '현대차',
@@ -137,46 +58,75 @@ def get_kospi_top_n(n=20):
         '032830.KS': '삼성생명',
         '086790.KS': '하나금융지주',
     }
-    return list(fallback.keys())[:n], fallback
+
+    try:
+        from bs4 import BeautifulSoup
+        headers = {
+            'User-Agent': (
+                'Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
+                'AppleWebKit/537.36 (KHTML, like Gecko) '
+                'Chrome/120.0.0.0 Safari/537.36'
+            )
+        }
+        url = 'https://finance.naver.com/sise/sise_market_sum.naver?sosok=0&page=1'
+        resp = requests.get(url, headers=headers, timeout=15)
+        resp.encoding = 'euc-kr'
+        soup = BeautifulSoup(resp.text, 'html.parser')
+
+        codes_names = {}
+        for a_tag in soup.select('td.ctg a[href*="code="]'):
+            href = a_tag.get('href', '')
+            name = a_tag.text.strip()
+            if 'code=' in href:
+                code = href.split('code=')[-1][:6]
+                yf_tk = code + '.KS'
+                codes_names[yf_tk] = name
+                if len(codes_names) >= n:
+                    break
+
+        if len(codes_names) >= 5:
+            return list(codes_names.keys())[:n], codes_names
+
+    except Exception:
+        pass
+
+    return list(FALLBACK.keys())[:n], FALLBACK
 
 
-# ── 메인 실행 ─────────────────────────────────────────────────
-if st.button("🚀 전략 실행 및 결과 보기", type="primary", use_container_width=False):
+# =========================================================
+# 메인 실행
+# =========================================================
+if st.button("🚀 전략 실행 및 결과 보기", type="primary"):
 
-    TOP_N      = 20
+    TOP_N = 20
     TIP_TICKER = 'TIP'
 
     with st.status("🔄 데이터 수집 및 계산 중...") as status:
 
-        # ── Step 1: 코스피 시총 상위 종목 수집 ───────────────
+        # Step 1: 코스피 종목 수집
         st.write("📋 코스피 시총 상위 종목 수집 중...")
         try:
             top20_tickers, name_map = get_kospi_top_n(TOP_N)
-            st.write(f"✅ 코스피 시총 상위 {len(top20_tickers)}개 종목 확인")
-
-            # 종목 목록 표시
             name_list = [name_map.get(tk, tk) for tk in top20_tickers]
-            st.caption("수집 종목: " + " · ".join(name_list))
+            st.write(f"✅ {len(top20_tickers)}개 종목 확인: {' · '.join(name_list)}")
         except Exception as e:
             st.error(f"종목 목록 수집 실패: {e}")
             st.stop()
 
-        # ── Step 2: 주가 데이터 수집 ─────────────────────────
+        # Step 2: 주가 데이터 수집
         st.write("📡 주가 데이터 수집 중 (14개월)...")
         try:
             end_date   = datetime.today()
             start_date = end_date - timedelta(days=430)
 
-            all_tickers = top20_tickers + [TIP_TICKER]
             raw = yf.download(
-                all_tickers,
+                top20_tickers + [TIP_TICKER],
                 start=start_date.strftime('%Y-%m-%d'),
                 end=end_date.strftime('%Y-%m-%d'),
                 auto_adjust=True,
                 progress=False
             )
 
-            # yfinance 멀티인덱스 안전 처리
             if isinstance(raw.columns, pd.MultiIndex):
                 prices = raw['Close']
             else:
@@ -184,38 +134,35 @@ if st.button("🚀 전략 실행 및 결과 보기", type="primary", use_contain
 
             monthly = prices.resample('ME').last()
 
-            # 정상 수집 종목 확인
             available = [
                 tk for tk in top20_tickers
                 if tk in monthly.columns and monthly[tk].notna().sum() >= 5
             ]
             missing = [tk for tk in top20_tickers if tk not in available]
-
-            st.write(f"✅ {len(monthly)}개월치 주가 수집 완료 "
-                     f"({len(available)}개 정상 / {len(missing)}개 누락)")
+            st.write(
+                f"✅ {len(monthly)}개월치 수집 완료 "
+                f"({len(available)}개 정상 / {len(missing)}개 누락)"
+            )
             if missing:
-                missing_names = [name_map.get(tk, tk) for tk in missing]
-                st.caption(f"누락 종목 (제외): {', '.join(missing_names)}")
+                st.caption("누락: " + ", ".join([name_map.get(tk, tk) for tk in missing]))
 
         except Exception as e:
             st.error(f"주가 데이터 수집 실패: {e}")
             st.stop()
 
-        # ── Step 3: TIP 필터 판정 ────────────────────────────
-        st.write("🔍 TIP ETF 모멘텀 필터 확인 중...")
+        # Step 3: TIP 필터
+        st.write("🔍 TIP ETF 필터 확인 중...")
         try:
             if TIP_TICKER not in monthly.columns:
                 st.error("TIP ETF 데이터를 가져오지 못했습니다.")
                 st.stop()
-
             tip_avg, tip_r1, tip_r3, tip_r6, tip_r12 = avg_momentum(monthly[TIP_TICKER])
             tip_pass = (not np.isnan(tip_avg)) and (tip_avg > 0)
-
         except Exception as e:
             st.error(f"TIP 필터 계산 실패: {e}")
             st.stop()
 
-        # ── Step 4: 종목별 모멘텀 계산 ───────────────────────
+        # Step 4: 모멘텀 계산
         st.write("🧮 종목별 모멘텀 계산 중...")
         momentum_rows = []
         for tk in available:
@@ -227,10 +174,10 @@ if st.button("🚀 전략 실행 및 결과 보기", type="primary", use_contain
             momentum_rows.append({
                 '종목코드':      tk.replace('.KS', ''),
                 '종목명':        name_map.get(tk, tk),
-                '1M(%)':        round(r1   * 100, 2),
-                '3M(%)':        round(r3   * 100, 2),
-                '6M(%)':        round(r6   * 100, 2),
-                '12M(%)':       round(r12  * 100, 2),
+                '1M(%)':        round(r1    * 100, 2),
+                '3M(%)':        round(r3    * 100, 2),
+                '6M(%)':        round(r6    * 100, 2),
+                '12M(%)':       round(r12   * 100, 2),
                 '평균모멘텀(%)': round(m_avg * 100, 2),
             })
 
@@ -240,25 +187,26 @@ if st.button("🚀 전략 실행 및 결과 보기", type="primary", use_contain
             .reset_index(drop=True)
         )
         df_rank.index += 1
-
         status.update(label="✅ 계산 완료!", state="complete")
 
-    # ── 결과 출력 ─────────────────────────────────────────────
+    # =========================================================
+    # 결과 출력
+    # =========================================================
     st.divider()
     st.subheader("📊 전략 결과 요약")
 
-    col1, col2, col3, col4 = st.columns(4)
-    col1.metric(
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric(
         "TIP 모멘텀 (인플레 필터)",
         f"{tip_avg*100:.2f}%" if not np.isnan(tip_avg) else "N/A",
         "PASS ✅" if tip_pass else "BLOCK 🚫"
     )
-    col2.metric("분석 종목 수", f"{len(df_rank)}개")
-    col3.metric("기준일", datetime.today().strftime('%Y-%m-%d'))
-    col4.metric(
-        "다음 리밸런싱",
-        (datetime.today().replace(day=1) + timedelta(days=32)).replace(day=1).strftime('%Y-%m 말일')
-    )
+    c2.metric("분석 종목 수", f"{len(df_rank)}개")
+    c3.metric("기준일", datetime.today().strftime('%Y-%m-%d'))
+    next_rebal = (
+        datetime.today().replace(day=1) + timedelta(days=32)
+    ).replace(day=1)
+    c4.metric("다음 리밸런싱", next_rebal.strftime('%Y-%m 말일'))
 
     st.divider()
 
@@ -266,39 +214,42 @@ if st.button("🚀 전략 실행 및 결과 보기", type="primary", use_contain
     if not tip_pass:
         st.error(
             f"🚫 **TIP 필터 차단** (TIP 평균 모멘텀: {tip_avg*100:.2f}%)  \n"
-            f"→ **이번 달은 전량 현금 보유하세요!** 주식 매수 금지"
+            "→ **이번 달은 전량 현금 보유하세요!**"
         )
     elif len(df_rank) == 0:
-        st.warning("⚠️ 모멘텀을 계산할 수 있는 종목이 없습니다. 데이터를 확인하세요.")
+        st.warning("⚠️ 모멘텀을 계산할 수 있는 종목이 없습니다.")
     else:
         best = df_rank.iloc[0]
         st.success(f"✅ TIP 필터 통과! (TIP 평균 모멘텀: {tip_avg*100:.2f}%)")
         st.info(
-            f"🎯 **이번 달 추천 매수 종목: [{best['종목명']}] ({best['종목코드']})**  \n"
-            f"평균 모멘텀: **{best['평균모멘텀(%)']:+.2f}%**  "
-            f"| 1M: {best['1M(%)']:+.2f}%  "
-            f"| 3M: {best['3M(%)']:+.2f}%  "
-            f"| 6M: {best['6M(%)']:+.2f}%  "
+            f"🎯 **이번 달 추천 매수 종목: {best['종목명']} ({best['종목코드']})**  \n"
+            f"평균 모멘텀: **{best['평균모멘텀(%)']:+.2f}%** "
+            f"| 1M: {best['1M(%)']:+.2f}% "
+            f"| 3M: {best['3M(%)']:+.2f}% "
+            f"| 6M: {best['6M(%)']:+.2f}% "
             f"| 12M: {best['12M(%)']:+.2f}%"
         )
 
     # TIP 상세
-    with st.expander("🔍 TIP ETF 모멘텀 상세 보기"):
+    with st.expander("🔍 TIP ETF 상세 보기"):
         if not np.isnan(tip_avg):
-            tc1, tc2, tc3, tc4, tc5 = st.columns(5)
-            tc1.metric("1개월",  f"{tip_r1*100:+.3f}%")
-            tc2.metric("3개월",  f"{tip_r3*100:+.3f}%")
-            tc3.metric("6개월",  f"{tip_r6*100:+.3f}%")
-            tc4.metric("12개월", f"{tip_r12*100:+.3f}%")
-            tc5.metric("평균",   f"{tip_avg*100:+.3f}%",
-                       "매수 가능 ✅" if tip_pass else "현금 보유 🚫")
-        st.caption("TIP = iShares TIPS Bond ETF. 인플레이션 기대를 반영하며 양수일 때 위험자산 매수에 유리한 환경입니다.")
+            t1, t2, t3, t4, t5 = st.columns(5)
+            t1.metric("1개월",  f"{tip_r1*100:+.3f}%")
+            t2.metric("3개월",  f"{tip_r3*100:+.3f}%")
+            t3.metric("6개월",  f"{tip_r6*100:+.3f}%")
+            t4.metric("12개월", f"{tip_r12*100:+.3f}%")
+            t5.metric("평균",   f"{tip_avg*100:+.3f}%",
+                      "매수 가능 ✅" if tip_pass else "현금 보유 🚫")
+        st.caption(
+            "TIP = iShares TIPS Bond ETF. "
+            "인플레이션 기대를 반영하며 양수일 때 위험자산 매수 환경입니다."
+        )
 
+    # 순위표
     st.divider()
     st.subheader("🏆 코스피 시총 상위 종목 모멘텀 순위")
 
     if len(df_rank) > 0:
-        # 색상 스타일링
         def color_momentum(val):
             if isinstance(val, (int, float)) and not np.isnan(val):
                 color = '#39d98a' if val >= 0 else '#ff4757'
